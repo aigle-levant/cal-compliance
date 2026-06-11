@@ -1,0 +1,16 @@
+{
+  "summary": {
+    "total_discovered_urls": 169,
+    "successful_extractions": 169,
+    "failed_extractions": 0,
+    "skipped_pages": 0,
+    "coverage_percent": 100.0
+  },
+  "data_quality": {
+    "total_records": 169,
+    "missing_title_number": 169,
+    "missing_section_number": 169,
+    "missing_heading": 0,
+    "empty_content": 0
+  }
+}
