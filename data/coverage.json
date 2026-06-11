@@ -1,7 +1,6 @@
 {
-  "total_discovered": 169,
-  "already_processed": 169,
-  "attempted": 0,
-  "successful": 0,
-  "failed": 0
+  "duration_seconds": 8.92,
+  "successful_extractions": 1,
+  "failed_extractions": 0,
+  "total_indexed_cache": 1
 }
