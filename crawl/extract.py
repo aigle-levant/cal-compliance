@@ -151,8 +151,27 @@ async def main():
                     url
                 )
 
-                metadata = result.metadata if result.metadata else {}
-                markdown = result.markdown.raw_markdown if result.markdown else ""
+                metadata = result.metadata or {}
+                markdown = ""
+
+                if result.markdown:
+                    fit_markdown = getattr(result.markdown, "fit_markdown", None)
+                    markdown = fit_markdown if fit_markdown else result.markdown.raw_markdown
+
+                # Debug a single page only
+                DEBUG = False
+                if DEBUG:
+                    print("\n" + "=" * 80)
+                    print(f"TITLE: {metadata.get('title', 'NO TITLE')}")
+                    print("=" * 80)
+                    print("\nRAW MARKDOWN:\n")
+                    print(result.markdown.raw_markdown[:1000])
+
+                    fit_markdown = getattr(result.markdown, "fit_markdown", None)
+                    if fit_markdown:
+                        print("\nFIT MARKDOWN:\n")
+                        print(fit_markdown[:1000])
+                    print("\n" + "=" * 80)
 
                 if len(markdown.strip()) < MIN_CONTENT_LENGTH:
                     write_log({
@@ -223,6 +242,6 @@ async def main():
 
     logging.info(f"Coverage report saved to {COVERAGE_FILE}")
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-

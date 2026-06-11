@@ -237,3 +237,9 @@
 2026-06-11 11:55:07,863 [INFO] SUCCESS: California Department of Industrial Relations - Workplace Postings
 2026-06-11 11:55:09,062 [INFO] SUCCESS: DWC court calendar
 2026-06-11 11:55:09,408 [INFO] Coverage report saved to ../data/coverage.json
+2026-06-11 14:00:43,116 [INFO] Checkpoint loaded. 169 URLs already processed.
+2026-06-11 14:00:43,120 [INFO] Discovered=169 Remaining=0
+2026-06-11 14:00:48,798 [INFO] Coverage report saved to ../data/coverage.json
+2026-06-11 14:05:29,964 [INFO] Checkpoint loaded. 169 URLs already processed.
+2026-06-11 14:05:30,031 [INFO] Discovered=169 Remaining=0
+2026-06-11 14:05:32,172 [INFO] Coverage report saved to ../data/coverage.json
