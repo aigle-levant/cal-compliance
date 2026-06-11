@@ -1,247 +1,198 @@
+
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
-from crawl4ai import (
-    AsyncWebCrawler,
-    BrowserConfig,
-    CacheMode,
-    CrawlerRunConfig,
-)
+from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig
+from crawl4ai.content_scraping_strategy import LXMLWebScrapingStrategy
+from crawl4ai.deep_crawling import BestFirstCrawlingStrategy
+from crawl4ai.deep_crawling.filters import ContentTypeFilter, DomainFilter, FilterChain, URLPatternFilter
+from crawl4ai.deep_crawling.scorers import KeywordRelevanceScorer
 
-INPUT = "../data/urls.jsonl"
-OUTPUT = "../data/extract.jsonl"
+# File Paths
+INPUT_SEEDS = "../data/urls.jsonl"  # Your curated, high-signal seed file
+OUTPUT_EXTRACT = "../data/extract.jsonl"
 LOG_FILE = "../data/log.jsonl"
 COVERAGE_FILE = "../data/coverage.json"
 
-MAX_CONCURRENCY = 3
-MAX_RETRIES = 3
-MIN_CONTENT_LENGTH = 100
+# Threshold Constraints
+MIN_CONTENT_LENGTH = 150
+MAX_DEPTH = 3             # Allows tracing from hubs down to rule sections safely
+MAX_PAGES_LIMIT = 250     # Structural boundary guardrail to optimize processing limits
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("../data/crawler.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 
-def normalize_url(url: str) -> str:
-    parsed = urlparse(url)
-    path = parsed.path.rstrip("/")
-    return (
-        f"{parsed.scheme}://"
-        f"{parsed.netloc}"
-        f"{path}"
-    )
+def load_seed_urls() -> list[str]:
+    seeds = []
+    if not Path(INPUT_SEEDS).exists():
+        logging.error(f"Seed file missing at: {INPUT_SEEDS}")
+        return seeds
+    with open(INPUT_SEEDS, "r", encoding="utf8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                seeds.append(json.loads(line)["url"])
+            except Exception:
+                continue
+    return seeds
 
 def load_processed_urls() -> set[str]:
     processed = set()
-
     if not Path(LOG_FILE).exists():
         return processed
-
     with open(LOG_FILE, "r", encoding="utf8") as f:
         for line in f:
             if not line.strip():
                 continue
-
             try:
                 record = json.loads(line)
                 if record.get("status") == "success":
                     processed.add(record["url"])
             except Exception:
                 pass
-
     return processed
 
-def write_log(record: dict):
+def write_log(url: str, status: str, extra: dict = None):
+    payload = {"url": url, "status": status, "timestamp": datetime.now(timezone.utc).isoformat()}
+    if extra:
+        payload.update(extra)
     with open(LOG_FILE, "a", encoding="utf8") as f:
-        f.write(json.dumps(record) + "\n")
+        f.write(json.dumps(payload) + "\n")
 
-def parse_regulatory_metadata(title: str, url: str) -> dict:
-    return {
-        "title_number": None,
-        "title_name": None,
-        "division": None,
-        "chapter": None,
-        "subchapter": None,
-        "section_number": None,
-        "section_heading": title,
-        "breadcrumb_path": None
-    }
+async def execute_integrated_deep_crawl():
+    print("\n🚀 LAUNCHING INTEGRATED BEST-FIRST SEED TRAVERSAL 🚀")
+    
+    # 1. Load your curated seeds and checkpoint tracking logs
+    seed_urls = load_seed_urls()
+    processed_urls = load_processed_urls()
+    
+    if not seed_urls:
+        print("No input seeds detected. Halting execution loop.")
+        return
+        
+    logging.info(f"Loaded {len(seed_urls)} verified start points from urls.jsonl.")
+    logging.info(f"Checkpoint active: {len(processed_urls)} entries already indexed.")
 
-async def crawl_url(crawler, run_config, semaphore, url):
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            async with semaphore:
-                result = await crawler.arun(
-                    url=url,
-                    config=run_config
-                )
+    # 2. Configure Whitelist Path Filters
+    filter_chain = FilterChain([
+        DomainFilter(
+            allowed_domains=["https://dir.ca.gov/sitemap/sitemap.html"],
+            blocked_domains=["old.dir.ca.gov"]
+        ),
+        # Restrict graph exploration exclusively to regulatory tracks
+        URLPatternFilter(patterns=["*/t8/*", "*/dlse/*", "*/dosh/*", "*regulations*", "*safety*"]),
+        ContentTypeFilter(allowed_types=["text/html"])
+    ])
 
-            if not result.success:
-                raise Exception(
-                    result.error_message or "Unknown crawl failure"
-                )
+    # 3. Configure Path Priority Scorers
+    compliance_scorer = KeywordRelevanceScorer(
+        keywords=["t8", "section", "order", "safety", "wages", "hours", "heat", "illness", "employer"],
+        weight=1.0
+    )
 
-            return result
+    # 4. Bind Settings into the Master Run Parameters object
+    config = CrawlerRunConfig(
+        deep_crawl_strategy=BestFirstCrawlingStrategy(
+            max_depth=MAX_DEPTH,
+            include_external=False,
+            filter_chain=filter_chain,
+            url_scorer=compliance_scorer,
+            max_pages=MAX_PAGES_LIMIT,
+            score_threshold=0.2,  # Drops irrelevant links automatically
+            extra_seeds=seed_urls  # Ingests remaining list items into priority evaluation loops natively
+        ),
+        scraping_strategy=LXMLWebScrapingStrategy(),
+        
+        # Bypasses infinite network tracking scripts by monitoring structural parsing states
+        wait_for="js:() => document.readyState === 'complete'",
+        wait_for_timeout=10000, # 10-second circuit breaker per page
+        
+        excluded_tags=["nav", "footer", "header", "aside", "form", ".sidebar", "#sidebar"],
+        word_count_threshold=20,
+        remove_overlay_elements=True,
+        exclude_external_links=True,
+        delay_before_return_html=1.5,
+        magic=True,
+        stream=True  # Asynchronous stream mode writes data instantly to disk
+    )
 
-        except Exception as e:
-            if attempt == MAX_RETRIES:
-                raise e
-
-        delay = 2 ** attempt
-        logging.warning(
-            f"Retry {attempt}/{MAX_RETRIES} for {url} after {delay}s"
-        )
-        await asyncio.sleep(delay)
-
-async def main():
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     success_count = 0
     failure_count = 0
+    start_time = time.perf_counter()
 
-    processed_urls = load_processed_urls()
-    logging.info(
-        f"Checkpoint loaded. {len(processed_urls)} URLs already processed."
-    )
+    Path(OUTPUT_EXTRACT).parent.mkdir(parents=True, exist_ok=True)
 
-    if not Path(INPUT).exists():
-        logging.error(f"Input file not found: {INPUT}")
-        return
-
-    with open(INPUT, "r", encoding="utf8") as f:
-        discovered_urls = []
-        for line in f:
-            if not line.strip():
+    async with AsyncWebCrawler() as crawler:
+        # Pass the first element as the positional url string requirement. 
+        # Strategy pipeline fetches remaining extra_seeds automatically.
+        crawl_stream = await crawler.arun(url=seed_urls[0], config=config)
+        
+        async for result in crawl_stream:
+            url = result.url
+            
+            # Idempotency safety filter check
+            if url in processed_urls:
                 continue
-            try:
-                url = normalize_url(json.loads(line)["url"])
-                discovered_urls.append(url)
-            except Exception:
+                
+            if not result.success:
+                failure_count += 1
+                write_log(url, "failed", {"error": result.error_message or "Execution block"})
+                logging.error(f"❌ Target Node Failed: {url}")
                 continue
 
-    discovered_urls = list(dict.fromkeys(discovered_urls))
-    urls_to_crawl = [
-        url for url in discovered_urls if url not in processed_urls
-    ]
-
-    logging.info(
-        f"Discovered={len(discovered_urls)} Remaining={len(urls_to_crawl)}"
-    )
-
-    browser_config = BrowserConfig(headless=True, verbose=False)
-    run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
-
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        async def worker(url):
-            nonlocal success_count
-            nonlocal failure_count
-
-            try:
-                result = await crawl_url(
-                    crawler,
-                    run_config,
-                    semaphore,
-                    url
-                )
-
-                metadata = result.metadata or {}
-                markdown = ""
-
-                if result.markdown:
-                    fit_markdown = getattr(result.markdown, "fit_markdown", None)
-                    markdown = fit_markdown if fit_markdown else result.markdown.raw_markdown
-
-                # Debug a single page only
-                DEBUG = False
-                if DEBUG:
-                    print("\n" + "=" * 80)
-                    print(f"TITLE: {metadata.get('title', 'NO TITLE')}")
-                    print("=" * 80)
-                    print("\nRAW MARKDOWN:\n")
-                    print(result.markdown.raw_markdown[:1000])
-
-                    fit_markdown = getattr(result.markdown, "fit_markdown", None)
-                    if fit_markdown:
-                        print("\nFIT MARKDOWN:\n")
-                        print(fit_markdown[:1000])
-                    print("\n" + "=" * 80)
-
+            # Process Markdown content chunks
+            markdown = ""
+            if result.markdown:
+                markdown = result.markdown.fit_markdown or result.markdown.raw_markdown or ""
                 if len(markdown.strip()) < MIN_CONTENT_LENGTH:
-                    write_log({
-                        "url": url,
-                        "status": "skipped",
-                        "reason": "low_content"
-                    })
-                    logging.warning(f"Skipped: {url}")
-                    return
+                    markdown = result.markdown.raw_markdown or ""
 
-                parsed = parse_regulatory_metadata(
-                    metadata.get("title", ""),
-                    url
-                )
-
+            # Verify extraction density standards
+            if len(markdown.strip()) >= MIN_CONTENT_LENGTH:
                 record = {
-                    "title_number": parsed["title_number"],
-                    "title_name": parsed["title_name"],
-                    "division": parsed["division"],
-                    "chapter": parsed["chapter"],
-                    "subchapter": parsed["subchapter"],
-                    "section_number": parsed["section_number"],
-                    "section_heading": parsed["section_heading"],
-                    "citation": (
-                        f"{parsed['title_number']} CCR § {parsed['section_number']}"
-                        if parsed["title_number"] and parsed["section_number"]
-                        else None
-                    ),
-                    "breadcrumb_path": parsed["breadcrumb_path"],
+                    "title_number": "8" if "title8" in url.lower() else None,
+                    "title_name": "Title 8. Industrial Relations" if "title8" in url.lower() else None,
+                    "section_heading": result.metadata.get("title", "Regulatory Rule Node"),
                     "source_url": url,
                     "content_markdown": markdown,
                     "retrieved_at": datetime.now(timezone.utc).isoformat()
                 }
-
-                with open(OUTPUT, "a", encoding="utf8") as out:
+                
+                with open(OUTPUT_EXTRACT, "a", encoding="utf8") as out:
                     out.write(json.dumps(record) + "\n")
-
-                write_log({
-                    "url": url,
-                    "status": "success"
-                })
+                
+                write_log(url, "success")
+                processed_urls.add(url)
                 success_count += 1
-                logging.info(f"SUCCESS: {metadata.get('title', '')}")
+                
+                score = result.metadata.get("score", 0.0)
+                depth = result.metadata.get("depth", 0)
+                logging.info(f"✨ [Depth {depth}][Score {score:.2f}] INDEXED: {url}")
+            else:
+                write_log(url, "skipped", {"reason": "low_content"})
+                logging.warning(f"⚠️ Skipped (Low Content Signal): {url}")
 
-            except Exception as e:
-                failure_count += 1
-                write_log({
-                    "url": url,
-                    "status": "failed",
-                    "error": str(e)
-                })
-                logging.error(f"FAILED: {url}")
-                logging.error(str(e))
-
-        tasks = [worker(url) for url in urls_to_crawl]
-        await asyncio.gather(*tasks)
-
+    # Log operational telemetry metrics
+    duration = time.perf_counter() - start_time
     coverage = {
-        "total_discovered": len(discovered_urls),
-        "already_processed": len(processed_urls),
-        "attempted": len(urls_to_crawl),
-        "successful": success_count,
-        "failed": failure_count
+        "duration_seconds": round(duration, 2),
+        "successful_extractions": success_count,
+        "failed_extractions": failure_count,
+        "total_unique_indexed": len(processed_urls)
     }
-
+    
     with open(COVERAGE_FILE, "w", encoding="utf8") as f:
         json.dump(coverage, f, indent=2)
-
-    logging.info(f"Coverage report saved to {COVERAGE_FILE}")
-
+        
+    print(f"\n🎉 DATA INGESTION PIPELINE RUN RE-EXECUTED IN {duration:.2f} SECONDS 🎉")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(execute_integrated_deep_crawl())
