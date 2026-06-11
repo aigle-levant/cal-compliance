@@ -1,14 +1,7 @@
-# ccr-compliance-novulis
-Assignment for Novulis Consulting.
-
-- Tried parsing, faced a real block
-
-```md
+![Icon for govt.westlaw.com](https://govt.westlaw.com/favicon.ico)
+# govt.westlaw.com
 ## Performing security verification
 This website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.
 ## Verification successful. Waiting for govt.westlaw.com to respond
-Ray ID: `a0980e763cd7426e`
+Ray ID: `a0985fc759f87f96`
 Performance and Security by [Cloudflare](https://www.cloudflare.com?utm_source=challenge&utm_campaign=m)[Privacy](https://www.cloudflare.com/privacypolicy/)
-```
-
-- Inquired about this, was asked to use https://dir.ca.gov/ instead. Which works with normal crawler.

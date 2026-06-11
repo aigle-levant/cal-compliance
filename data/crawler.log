@@ -1,0 +1,44 @@
+2026-06-11 11:20:47,752 [INFO] Checkpoint active. Found 0 already processed profiles.
+2026-06-11 11:20:47,752 [INFO] Task queue prepared: Total=169, Remaining=169
+2026-06-11 11:20:52,534 [INFO] SUCCESS: https://dir.ca.gov/Bilingual-Services-Act/default.html
+2026-06-11 11:20:52,950 [INFO] SUCCESS: https://dir.ca.gov/AB1228/AB1228.html
+2026-06-11 11:20:53,430 [INFO] SUCCESS: https://dir.ca.gov/
+2026-06-11 11:20:54,712 [INFO] SUCCESS: https://dir.ca.gov/BoardsAndCommissions.html
+2026-06-11 11:20:55,213 [INFO] SUCCESS: https://dir.ca.gov/California-Worker/default.html
+2026-06-11 11:20:55,427 [INFO] SUCCESS: https://dir.ca.gov/California-Worker/
+2026-06-11 11:20:56,844 [INFO] SUCCESS: https://dir.ca.gov/ContactUs.html
+2026-06-11 11:20:57,393 [INFO] SUCCESS: https://dir.ca.gov/Contactus.html
+2026-06-11 11:20:58,515 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-01.html
+2026-06-11 11:20:59,456 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-02.html
+2026-06-11 11:21:00,504 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-03.html
+2026-06-11 11:21:01,177 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-04.html
+2026-06-11 11:21:02,225 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-05.html
+2026-06-11 11:21:02,993 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-06.html
+2026-06-11 11:21:03,785 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-07.html
+2026-06-11 11:21:04,559 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-08.html
+2026-06-11 11:21:05,089 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-09.html
+2026-06-11 11:21:05,921 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-10.html
+2026-06-11 11:21:06,612 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-11.html
+2026-06-11 11:21:07,045 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-12.html
+2026-06-11 11:25:48,638 [INFO] Checkpoint active. Found 0 already processed paths.
+2026-06-11 11:25:48,638 [INFO] Task queue prepared: Total=169, Remaining=169
+2026-06-11 11:25:54,009 [INFO] SUCCESS: https://dir.ca.gov/Bilingual-Services-Act/default.html -> [Section None]
+2026-06-11 11:25:54,396 [INFO] SUCCESS: https://dir.ca.gov/AB1228/AB1228.html -> [Section None]
+2026-06-11 11:25:54,703 [INFO] SUCCESS: https://dir.ca.gov/ -> [Section None]
+2026-06-11 11:25:55,813 [INFO] SUCCESS: https://dir.ca.gov/BoardsAndCommissions.html -> [Section None]
+2026-06-11 11:25:56,574 [INFO] SUCCESS: https://dir.ca.gov/California-Worker/ -> [Section None]
+2026-06-11 11:25:56,950 [INFO] SUCCESS: https://dir.ca.gov/California-Worker/default.html -> [Section None]
+2026-06-11 11:25:57,764 [INFO] SUCCESS: https://dir.ca.gov/ContactUs.html -> [Section None]
+2026-06-11 11:25:59,328 [INFO] SUCCESS: https://dir.ca.gov/Contactus.html -> [Section None]
+2026-06-11 11:25:59,566 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-01.html -> [Section None]
+2026-06-11 11:26:00,330 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-02.html -> [Section None]
+2026-06-11 11:26:01,518 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-03.html -> [Section None]
+2026-06-11 11:26:02,043 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-04.html -> [Section None]
+2026-06-11 11:26:03,244 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-05.html -> [Section None]
+2026-06-11 11:26:04,016 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-06.html -> [Section None]
+2026-06-11 11:26:04,691 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-07.html -> [Section None]
+2026-06-11 11:26:05,529 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-08.html -> [Section None]
+2026-06-11 11:26:06,265 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-09.html -> [Section None]
+2026-06-11 11:26:06,867 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-10.html -> [Section None]
+2026-06-11 11:26:08,093 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-12.html -> [Section None]
+2026-06-11 11:26:08,227 [INFO] SUCCESS: https://dir.ca.gov/DIRNews/2026/2026-11.html -> [Section 55.1]
