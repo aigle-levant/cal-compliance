@@ -1,92 +1,45 @@
 import json
-from pathlib import Path
 
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter
-)
+from embeddings import embeddings
+from db import supabase
 
-INPUT = Path("../data/extract.jsonl")
-OUTPUT = Path("../data/chunks.jsonl")
+BATCH_SIZE = 20
 
-OUTPUT.parent.mkdir(
-    parents=True,
-    exist_ok=True
-)
+rows = []
 
-# Fresh run
-OUTPUT.write_text("", encoding="utf8")
+with open("chunks.jsonl", encoding="utf8") as f:
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200,
-    length_function=len
-)
+    for line in f:
 
-chunk_count = 0
+        chunk = json.loads(line)
 
-with open(INPUT, "r", encoding="utf8") as infile, \
-     open(OUTPUT, "a", encoding="utf8") as outfile:
-
-    for line in infile:
-
-        if not line.strip():
-            continue
-
-        record = json.loads(line)
-
-        content = (
-            record.get("content_markdown", "")
-            .strip()
+        vector = embeddings.embed_query(
+            chunk["text"]
         )
 
-        if not content:
-            continue
+        rows.append({
+            **chunk,
+            "embedding": vector,
+        })
 
-        chunks = splitter.split_text(content)
+        if len(rows) >= BATCH_SIZE:
 
-        for idx, chunk in enumerate(chunks):
+            supabase.table(
+                "regulation_chunks"
+            ).insert(rows).execute()
 
-            chunk_record = {
-                "chunk_id":
-                    f"{record['source_url']}#{idx}",
-
-                "chunk_index":
-                    idx,
-
-                "source_url":
-                    record["source_url"],
-
-                "section_heading":
-                    record.get(
-                        "section_heading"
-                    ),
-
-                "citation":
-                    record.get(
-                        "citation"
-                    ),
-
-                "title_number":
-                    record.get(
-                        "title_number"
-                    ),
-
-                "section_number":
-                    record.get(
-                        "section_number"
-                    ),
-
-                "chunk_text":
-                    chunk
-            }
-
-            outfile.write(
-                json.dumps(chunk_record)
-                + "\n"
+            print(
+                f"Inserted {len(rows)} chunks"
             )
 
-            chunk_count += 1
+            rows = []
 
-print(
-    f"Created {chunk_count} chunks"
-)
+if rows:
+
+    supabase.table(
+        "regulation_chunks"
+    ).insert(rows).execute()
+
+    print(
+        f"Inserted {len(rows)} chunks"
+    )
