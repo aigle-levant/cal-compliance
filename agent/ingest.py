@@ -1,98 +1,104 @@
-import json
 import os
+import json
 import time
+from dotenv import load_dotenv
 from supabase import create_client, Client
-import google.generativeai as genai
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from google import genai
+from google.genai import types
 
-# ── Configuration ────────────────────────────────────────────────────────
+# Load environment variables from .env file
+load_dotenv()
+
+# 1. Initialize Environment & Clients
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-INPUT_JSONL = "../data/extracted_legal_content.jsonl"
-
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client()
 
-# Langchain splitter optimized for Legal Markdown
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=150,
-    separators=["\n## ", "\n### ", "\n\n", "\n", " ", ""]
-)
+def get_embedding(text: str) -> list[float]:
+    """Generates a 768-dimension vector embedding using the new GenAI SDK."""
+    try:
+        result = client.models.embed_content(
+            model='gemini-embedding-2',
+            contents=text,
+            config=types.EmbedContentConfig(
+                output_dimensionality=768,
+            )
+        )
+        if result.embeddings:
+            return result.embeddings[0].values
+        return None
+    except Exception as e:
+        print(f"Embedding generation failed: {e}")
+        return None
 
-def generate_embedding(text: str) -> list[float]:
-    """Generate embedding using Google's free text-embedding-004."""
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text,
-        task_type="retrieval_document", # Optimized for DB storage
-    )
-    return result['embedding']
-
-def process_and_upsert(section_data: dict):
-    content = section_data.get("content_markdown", "")
-    if not content:
-        return
-
-    chunks = text_splitter.split_text(content)
-    records_to_insert = []
-    
-    # Determine the citation format based on the URL
-    url = section_data.get("url", "").lower()
-    if "dir.ca.gov" in url:
-        source_domain = "Title 8"
-        citation = f"8 CCR § {section_data.get('section_number', 'Unknown')}"
-    elif "leginfo" in url:
-        source_domain = "Labor Code"
-        citation = f"Lab. Code § {section_data.get('section_number', 'Unknown')}"
-    else:
-        source_domain = "Unknown"
-        citation = "Unknown Citation"
+def index_title8_chunks(chunks: list[dict], table_name: str = "title8_sections"):
+    """Iterates through Title 8 chunks, generates embeddings, and upserts to Supabase."""
+    print(f"Initializing indexing for {len(chunks)} Title 8 chunks...")
+    batch = []
     
     for i, chunk in enumerate(chunks):
-        # Generate the embedding
-        embedding = generate_embedding(chunk)
-        
-        # Deterministic ID: e.g., "8_CCR_§_3203_chunk_0"
-        record_id = f"{citation}_chunk_{i}".replace(" ", "_")
-        
-        record = {
-            "id": record_id,
-            "source_domain": source_domain,
-            "citation": citation,
-            "section_number": section_data.get("section_number"),
-            "breadcrumb_path": section_data.get("breadcrumb_path", ""),
-            "source_url": section_data.get("url"),
-            "full_content_markdown": content, 
-            "chunk_text": chunk,
-            "embedding": embedding
-        }
-        records_to_insert.append(record)
-    
-    if records_to_insert:
-        try:
-            supabase.table("compliance_chunks").upsert(records_to_insert).execute()
-            print(f"Upserted {len(records_to_insert)} chunks for {citation}")
-        except Exception as e:
-            print(f"Database Error on {citation}: {e}")
-
-def main():
-    print("Starting Gemini/Supabase ingestion for T8 & Labor Code...")
-    
-    with open(INPUT_JSONL, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            section_data = json.loads(line)
-            process_and_upsert(section_data)
+        embedding = get_embedding(chunk["text"])
+        if not embedding:
+            continue
             
-            # Rate Limiting for Gemini Free Tier (15 RPM limit applies to some accounts)
-            # Adjust sleep time based on your specific free tier limits
-            time.sleep(1.5) 
-                
-    print("Ingestion complete.")
+        record = {
+            "id": chunk["chunk_id"], 
+            "document_type": chunk.get("document_type"),
+            "source_type": chunk.get("source_type"),
+            "title_id": chunk.get("title_id"),
+            "title_name": chunk.get("title_name"),
+            "division_id": chunk.get("division_id"),
+            "division_name": chunk.get("division_name"),
+            "chapter_id": chunk.get("chapter_id"),
+            "chapter_name": chunk.get("chapter_name"),
+            "subchapter_id": chunk.get("subchapter_id"),
+            "subchapter_name": chunk.get("subchapter_name"),
+            "article_id": chunk.get("article_id"),
+            "article_name": chunk.get("article_name"),
+            "section_number": chunk.get("section_number"),
+            "section_title": chunk.get("section_title"),
+            "citation": chunk.get("citation"),
+            "breadcrumb_path": chunk.get("breadcrumb_path"),
+            "source_url": chunk.get("source_url"),
+            "retrieved_at": chunk.get("retrieved_at"),
+            "content_markdown": chunk["text"], 
+            "embedding": embedding,
+            "chunk_index": chunk.get("chunk_index"),
+            "chunk_total": chunk.get("chunk_total")
+        }
+        
+        batch.append(record)
+        
+        if len(batch) >= 50 or i == len(chunks) - 1:
+            try:
+                supabase.table(table_name).upsert(batch).execute()
+                print(f"Successfully upserted batch up to index {i}")
+                batch = []
+                time.sleep(1) # Prevent free tier rate limiting
+            except Exception as e:
+                print(f"Database upsert failed for batch ending at index {i}: {e}")
 
+# ---- ADD THIS EXECUTION BLOCK AT THE BOTTOM ----
 if __name__ == "__main__":
-    main()
+    # Change 'chunks.jsonl' to whatever your chunked file is named
+    chunks_file_path = "../data/chunks.jsonl" 
+    
+    if not os.path.exists(chunks_file_path):
+        print(f"Error: Could not find your chunks file at '{chunks_file_path}'. Check the path.")
+    else:
+        # Load your chunks from your JSONL file
+        print(f"Loading chunks from {chunks_file_path}...")
+        loaded_chunks = []
+        with open(chunks_file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    loaded_chunks.append(json.loads(line))
+        
+        # Run the indexing pipeline
+        if loaded_chunks:
+            index_title8_chunks(loaded_chunks)
+        else:
+            print("No chunks found in file.")
