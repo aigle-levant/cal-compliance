@@ -61,3 +61,9 @@ This reduced noise while preserving labor, safety, and workplace regulation cont
 - Found out that T8 has deeply nested URLs. Leginfo doesn't. Got leginfo urls first, then focused on T8.
 
 - Note: the extraction process can take time!
+
+- Ran the jsonl file several times over with AI to check if any improvements can be made according to the schema. Obtained the final version at my 5th run through.
+
+- Extracted, validated and chunked T8 and LegInfo pages. Of which, 1 page from T8 failed to be extracted due to server-side HTTP/2 protocol errors. A few pages have missing division id and name. These were handled too.
+
+- Found out entirety of Leginfo was missing from the chunks, so realised this had to do with the URL structure being different for both T8 and LegInfo, decided to structure extract.py acc to this.
