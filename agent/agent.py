@@ -1,113 +1,143 @@
-import os
+from agent.config import (
+    get_supabase,
+    get_gemini,
+    EMBED_MODEL,
+    EMBED_DIM,
+    LLM_MODEL,
+)
+
 import sys
-from supabase import create_client, Client
-import google.generativeai as genai
+supabase = get_supabase()
+client = get_gemini()
+from google.genai import types
 
-# ── Configuration ────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") # Or Anon key if RLS allows reads
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Initialize Clients
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIM = 768
+LLM_MODEL = "gemini-2.0-flash"
 
-def get_query_embedding(query: str) -> list[float]:
-    """Generates an embedding for the user's question.
-    
-    CRUCIAL: Uses task_type="retrieval_query" to match Gemini's internal 
-    asymmetric retrieval optimization.
-    """
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=query,
-        task_type="retrieval_query",
+SYSTEM_PROMPT = """You are a compliance assistant that helps facility operators \
+(restaurants, theaters, farms, etc.) understand which California Code of \
+Regulations (CCR) sections apply to them.
+
+Rules:
+- Only use the retrieved context.
+- If a regulation is not present in the context, do not mention it.
+- Never invent citations or section numbers.
+- Ask follow-up questions when the facility type or scenario is unclear.
+- If the retrieved context is insufficient, explicitly say so.
+- For every regulation you mention, cite its citation (e.g. "8 CCR § 6120") and \
+include the source_url if available.
+- Briefly explain WHY each cited section applies to the operator's situation.
+- If the context doesn't contain enough information to answer confidently, say so \
+and ask a clarifying follow-up question instead of guessing.
+- Always end your answer with: "This is not legal advice. Consult a qualified \
+professional for compliance decisions."
+
+Context:
+{context}
+
+Question: {question}
+"""
+
+
+# 1. Gemini Embeddings -----------------------------------------------------
+def embed_query(text: str) -> list[float]:
+    result = client.models.embed_content(
+        model=EMBED_MODEL,
+        contents=text,
+        config=types.EmbedContentConfig(
+            task_type="RETRIEVAL_QUERY",   # asymmetric: query side
+            output_dimensionality=EMBED_DIM,
+        ),
     )
-    return result['embedding']
+    return result.embeddings[0].values
 
-def retrieve_legal_context(query: str, match_count: int = 8) -> list[dict]:
-    """Embeds the query and calls the Supabase RPC to find relevant text chunks."""
-    query_vector = get_query_embedding(query)
-    
-    # Call the stored procedure we created in Step 1
-    response = supabase.rpc(
-        "match_compliance_chunks",
-        {
-            "query_embedding": query_vector,
-            "match_threshold": 0.3,  # Adjust based on data noise
-            "match_count": match_count
-        }
-    ).execute()
-    
-    return response.data
 
-def run_compliance_agent(user_query: str):
-    print("🤖 Searching database for relevant sections...")
-    matched_chunks = retrieve_legal_context(user_query)
-    
-    if not matched_chunks:
-        print("❌ No matching regulations found in the database.")
-        return
+# 2. Supabase pgvector similarity search -----------------------------------
+def search_chunks(query_embedding: list[float], match_count: int = 8,
+                   title_id: str | None = None) -> list[dict]:
+    response = supabase.rpc("match_compliance_data", {
+        "query_embedding": query_embedding,
+        "match_count": match_count,
+        "filter_title_id": title_id,
+        "filter_division_id": None,
+        "filter_chapter_id": None,
+        "filter_section_number": None,
+    }).execute()
+    return response.data or []
 
-    # Build a clean context block for Gemini, attaching metadata to every chunk
-    context_items = []
-    print(f"📖 Retrieved {len(matched_chunks)} legal context chunks:")
-    for chunk in matched_chunks:
-        print(f"   - [{chunk['source_domain']}] {chunk['citation']} (Sim: {chunk['similarity']:.2f})")
-        
-        item_text = (
-            f"Source Body: {chunk['source_domain']}\n"
-            f"Citation: {chunk['citation']}\n"
-            f"Path: {chunk['breadcrumb_path']}\n"
-            f"URL: {chunk['source_url']}\n"
-            f"Regulatory Text:\n{chunk['chunk_text']}"
+
+# 3. Format retrieved chunks for the LLM prompt -----------------------------
+def format_context(chunks: list[dict]) -> str:
+    parts = []
+
+    for c in chunks:
+        parts.append(
+            f"""
+Citation: {c.get("citation", "Unknown")}
+
+Section Title:
+{c.get("section_title", "")}
+
+Breadcrumb:
+{c.get("breadcrumb_path", "")}
+
+Source URL:
+{c.get("source_url", "")}
+
+Content:
+{c.get("text", "")}
+"""
         )
-        context_items.append(item_text)
-        
-    context_block = "\n\n=================================\n\n".join(context_items)
 
-    # Initialize Gemini 1.5 Flash (Massive context window ideal for legal context blocks)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    system_prompt = """
-    You are a professional California Legal Compliance Agent specializing in Title 8 (Industrial Relations/Cal/OSHA) and the California Labor Code.
-    Your task is to advise business owners and operators on which regulations apply to them based strictly on the provided text.
+    return "\n\n====================\n\n".join(parts)
 
-    CRITICAL INSTRUCTIONS:
-    1. Rely ONLY on the provided legal text. Do not make up regulations, and do not use outside knowledge.
-    2. If the context does not contain enough concrete information to confidently answer the user's scenario, state exactly:
-       "Based on the currently indexed regulations, I lack sufficient specific details to confirm the complete requirements for this facility." Then ask targeted follow-up questions to clarify their operations.
-    3. For EVERY requirement or rule you state, you must explicitly include its citation (e.g., "Under 8 CCR § 3203..." or "Per Lab. Code § 6401..."). 
-    4. Provide the Source URL for each cited section at the end of its respective paragraph so the user can verify it.
-    5. Explain clearly *why* each regulation applies to their specific operations (e.g., if they run a restaurant, tie it back to kitchen hazards or employee safety requirements).
-    6. Conclude your answer with this exact legal disclaimer block verbatim:
-       "\n\n***\n**Disclaimer:** This is an AI-generated regulatory summary for informational purposes only. It does not constitute formal legal advice. For binding interpretations, consult legal counsel or the respective California enforcement agencies."
-    """
 
-    user_prompt = f"""
-    CONTEXT DATA FROM DATABASE:
-    {context_block}
-    
-    USER QUERY:
-    {user_query}
-    """
-
-    print("\n🧠 Brainstorming compliance requirements...")
-    response = model.generate_content(
-        contents=user_prompt,
-        generation_config={"prompt_feedback": [], "temperature": 0.2} # Low temperature ensures accuracy
+# 4. Gemini LLM answer -------------------------------------------------------
+def generate_answer(question: str, context: str) -> str:
+    prompt = SYSTEM_PROMPT.format(context=context, question=question)
+    response = client.models.generate_content(
+        model=LLM_MODEL,
+        contents=prompt,
     )
-    
-    print("\n=== COMPLIANCE REPORT ===")
-    print(response.text)
+    return response.text
 
-# ── Execution ────────────────────────────────────────────────────────────
+
+# Full pipeline --------------------------------------------------------------
+def answer_question(question: str, title_id: str | None = None, k: int = 15) -> str:
+    query_embedding = embed_query(question)
+    chunks = search_chunks(query_embedding, match_count=k, title_id=title_id)
+    MIN_SIMILARITY = 0.65
+
+    chunks = [
+        c for c in chunks
+        if c.get("similarity", 0) >= MIN_SIMILARITY
+    ]
+    if not chunks:
+        return ("No relevant CCR sections found in the index. Try rephrasing, "
+                "or the relevant regulations may not be indexed yet.")
+
+    context = format_context(chunks)
+    answer = generate_answer(question, context)
+
+    print(f"\n--- Retrieved {len(chunks)} chunks ---")
+    for c in chunks:
+        print(f"- {c.get('citation')}: {c.get('section_title')} "
+              f"(similarity={c['similarity']:.3f})")
+
+    return answer
+
+
 if __name__ == "__main__":
-    # Test queries aligned with your assignment requirements
-    sample_query = "What regulations should a restaurant operator in California be aware of regarding worker safety?"
-    
-    # If a query is provided via command line, use it
-    if len(sys.argv) > 1:
-        sample_query = " ".join(sys.argv[1:])
-        
-    run_compliance_agent(sample_query)
+    if len(sys.argv) < 2:
+        print('Usage: python rag_pipeline.py "your question" [title_id]')
+        sys.exit(1)
+
+    question = sys.argv[1]
+    title_id = sys.argv[2] if len(sys.argv) > 2 else None
+
+    print(f"Question: {question}\n")
+    answer = answer_question(question, title_id=title_id)
+    print("\n--- Answer ---")
+    print(answer)

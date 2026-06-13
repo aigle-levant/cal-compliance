@@ -13,3 +13,5 @@ postgrest>=0.10.0
 pydantic>=2.6.0
 
 python-dotenv>=1.0.0
+typer[all]
+rich
