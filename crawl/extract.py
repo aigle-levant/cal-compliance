@@ -526,7 +526,12 @@ _RE_GO_BACK = re.compile(
     r"\[!\[Go Back.*?Table of Contents\]\([^)]*\)",
     re.IGNORECASE | re.DOTALL,
 )
-
+SECTION_RE = re.compile(
+    r"§\s*(\d+(?:\.\d+)*)\.?\s+(.+)"
+)
+SECTION_RE2 = re.compile(
+    r"[Ss]ection\s+(\d+(?:\.\d+)*)\.?\s+(.+)"
+)
 _RE_EMPTY_TABLE = re.compile(
     r"\|\s*\|\s*\n\|\s*---\s*\|?",
     re.MULTILINE,
@@ -574,15 +579,31 @@ def extract_section_header(md: str) -> tuple[str | None, str | None]:
     Inline markdown links/images are stripped from the returned title so
     artefacts like '[Form 5020](http://...)' don't pollute the heading.
     """
-    text = "\n".join(md.splitlines()[:40])
+    text = "\n".join(md.splitlines()[:120])
     patterns = [
-        r"§\s*([A-Za-z0-9][A-Za-z0-9.\-]*?)\.?\s{1,4}(.+)",
-        r"[Ss]ection\s+([A-Za-z0-9][A-Za-z0-9.\-]*?)\.?\s{1,4}(.+)",
-    ]
+    r"§\s*(\d+(?:\.\d+)*)\.?\s+(.+)",
+    r"[Ss]ection\s+(\d+(?:\.\d+)*)\.?\s+(.+)",
+]
     for pat in patterns:
         m = re.search(pat, text)
         if m:
-            return m.group(1).strip().rstrip("."), _strip_inline_markup(m.group(2))
+            section = m.group(1).strip()
+
+            section_match = re.match(
+    r"\d+(?:\.\d+)*",
+    section
+)
+
+            if not section_match:
+                continue
+
+            section = section_match.group(0)
+
+            title = _strip_inline_markup(
+    m.group(2)
+)
+
+            return section, title
     return None, None
 
 
@@ -740,6 +761,8 @@ def build_record(url: str, raw_markdown: str, page_title: str | None = None) -> 
     markdown = clean_markdown(raw_markdown)
     if is_t8:
         markdown = trim_before_section(markdown)
+        if markdown.startswith("§"):
+            markdown = markdown.strip()
 
     # For non-T8 sources, extract section header from the cleaned markdown
     if not is_t8:

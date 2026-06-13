@@ -1,130 +1,115 @@
 import json
+import re
+from collections import Counter
 from pathlib import Path
 
-URLS_FILE = "../data/urls.jsonl"
-EXTRACT_FILE = "../data/extract.jsonl"
-LOG_FILE = "../data/log.jsonl"
-REPORT_FILE = "../data/coverage.json"
+INPUT = "../data/extract.jsonl"
 
-def count_discovered_urls():
-    urls = set()
-    if not Path(URLS_FILE).exists():
-        return urls
+# Escaped the asterisks (\*) to safely detect optional markdown bolding tags
+SECTION_RE = re.compile(
+    r"§\s*\*{0,2}\s*(\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
 
-    with open(URLS_FILE, "r", encoding="utf8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                urls.add(json.loads(line)["url"])
-            except Exception:
-                pass
+TITLE_RE = re.compile(
+    r"§\s*\*{0,2}\s*(\d+(?:\.\d+)).?\s(.+?)$",
+    re.MULTILINE,
+)
 
-    return urls
+HISTORY_PATTERNS = [
+    "register",
+    "operative",
+    "amendment filed",
+    "editorial correction",
+    "repealer",
+    "certificate of compliance",
+]
 
-def analyze_extractions():
-    stats = {
-        "records": 0,
-        "missing_title_number": 0,
-        "missing_section_number": 0,
-        "missing_heading": 0,
-        "empty_content": 0,
-    }
+def clean_text(text: str) -> str:
+    return text.replace("**", "")
 
-    if not Path(EXTRACT_FILE).exists():
-        return stats
+def extract_section(text: str):
+    text = clean_text(text)
+    m = SECTION_RE.search(text)
+    if not m:
+        return None
+    return m.group(1)
 
-    with open(EXTRACT_FILE, "r", encoding="utf8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-                stats["records"] += 1
-
-                if not record.get("title_number"):
-                    stats["missing_title_number"] += 1
-
-                if not record.get("section_number"):
-                    stats["missing_section_number"] += 1
-
-                if not record.get("section_heading"):
-                    stats["missing_heading"] += 1
-
-                content = record.get("content_markdown", "").strip()
-                if len(content) < 100:
-                    stats["empty_content"] += 1
-            except Exception:
-                pass
-
-    return stats
-
-def analyze_logs():
-    success = 0
-    failed = 0
-    skipped = 0
-
-    if not Path(LOG_FILE).exists():
-        return {
-            "success": 0,
-            "failed": 0,
-            "skipped": 0
-        }
-
-    with open(LOG_FILE, "r", encoding="utf8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                log = json.loads(line)
-                status = log.get("status")
-
-                if status == "success":
-                    success += 1
-                elif status == "failed":
-                    failed += 1
-                elif status == "skipped":
-                    skipped += 1
-            except Exception:
-                pass
-
-    return {
-        "success": success,
-        "failed": failed,
-        "skipped": skipped
-    }
+def is_history_chunk(text: str) -> bool:
+    text = text.lower()
+    hits = sum(
+        1
+        for pattern in HISTORY_PATTERNS
+        if pattern in text
+    )
+    return hits >= 3
 
 def main():
-    discovered = count_discovered_urls()
-    extraction_stats = analyze_extractions()
-    log_stats = analyze_logs()
+    stats = Counter()
+    mismatches = []
+    
+    input_path = Path(INPUT)
+    if not input_path.exists():
+        print(f"Error: Target file '{INPUT}' not found.")
+        return
 
-    coverage_percent = 0
-    if len(discovered) > 0:
-        coverage_percent = round((log_stats["success"] / len(discovered)) * 100, 2)
+    print("Running segment validation checks...")
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+                
+            row = json.loads(line)
+            # Support reading either "text" field or "content_markdown" field
+            text = row.get("text") or row.get("content_markdown") or ""
+            metadata_section = row.get("section_number")
 
-    report = {
-        "summary": {
-            "total_discovered_urls": len(discovered),
-            "successful_extractions": log_stats["success"],
-            "failed_extractions": log_stats["failed"],
-            "skipped_pages": log_stats["skipped"],
-            "coverage_percent": coverage_percent
-        },
-        "data_quality": {
-            "total_records": extraction_stats["records"],
-            "missing_title_number": extraction_stats["missing_title_number"],
-            "missing_section_number": extraction_stats["missing_section_number"],
-            "missing_heading": extraction_stats["missing_heading"],
-            "empty_content": extraction_stats["empty_content"]
-        }
-    }
+            actual_section = extract_section(text)
 
-    with open(REPORT_FILE, "w", encoding="utf8") as f:
-        json.dump(report, f, indent=2)
+            if not actual_section:
+                stats["unknown"] += 1
+                mismatches.append(
+                    {
+                        "line": line_num,
+                        "id": row.get("chunk_id") or row.get("id"),
+                        "reason": "section_not_found",
+                        "metadata_section": metadata_section,
+                    }
+                )
+                continue
 
-    print(json.dumps(report, indent=2))
-    print(f"\nCoverage report saved to: {REPORT_FILE}")
+            if str(metadata_section) != str(actual_section):
+                stats["mismatch"] += 1
+                mismatches.append(
+                    {
+                        "line": line_num,
+                        "id": row.get("chunk_id") or row.get("id"),
+                        "reason": "section_mismatch",
+                        "metadata_section": metadata_section,
+                        "actual_section": actual_section,
+                    }
+                )
+            else:
+                stats["matched"] += 1
+
+            if is_history_chunk(text):
+                stats["history_chunks"] += 1
+
+    total = stats["matched"] + stats["mismatch"] + stats["unknown"]
+    
+    print("\n=== VALIDATION REPORT ===")
+    print(f"TOTAL LINES RESCANURRED : {total}")
+    print(f"MATCHED METADATA        : {stats['matched']}")
+    print(f"MISMATCHED SECTIONS     : {stats['mismatch']}")
+    print(f"COULD NOT EXTRACT       : {stats['unknown']}")
+    print(f"REULATORY HISTORY CHUNKS: {stats['history_chunks']}")
+    
+    output_report = Path("validation_report.json")
+    output_report.write_text(
+        json.dumps(mismatches, indent=2),
+        encoding="utf-8",
+    )
+    print(f"\nSaved validation discrepancies log to {output_report}")
 
 if __name__ == "__main__":
     main()

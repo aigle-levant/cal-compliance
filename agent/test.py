@@ -1,19 +1,20 @@
+from collections import defaultdict
 import json
-import time
-from pathlib import Path
-from config import (
-    get_supabase,
-)
 
-CHUNKS_FILE = Path("../data/chunks.jsonl")
-TABLE_NAME = "compliance_data"
-BATCH_SIZE = 25
-supabase = get_supabase()
+groups = defaultdict(list)
 
-result = (
-    supabase.table("compliance_data")
-    .select("id", count="exact")
-    .execute()
-)
+with open("../data/chunks.jsonl", encoding="utf8") as f:
+    for line in f:
+        row = json.loads(line)
+        groups[row["chunk_id"]].append(row)
 
-print(result.count)
+for cid, rows in groups.items():
+    texts = {r["text"][:200] for r in rows}
+
+    if len(texts) > 1:
+        print("\n", cid)
+
+        for r in rows:
+            print("URL:", r["source_url"])
+            print("TITLE:", r.get("section_title"))
+            print()
