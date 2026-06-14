@@ -1,133 +1,45 @@
-"""
-extract.py
-----------
-Reads discovered section URLs from data/discovery.jsonl,
-fetches each page with Crawl4AI, extracts the canonical
-CCR hierarchy and section content, and writes structured
-records to data/sections.jsonl.
-
-Supports:
-  - Exponential-backoff retries per URL
-  - Persistent checkpoint (skip already-done URLs on resume)
-  - Failure log (data/failures.jsonl) for visibility
-  - Both URL patterns:
-      dir.ca.gov/t8/10.html
-      dir.ca.gov/Title8/6505.html
-"""
+# extract.py
 
 import asyncio
 import json
-import logging
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
-from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
+INPUT_FILE = "../data/discovery.jsonl"
+OUTPUT_FILE = "../data/sections.jsonl"
+CONCURRENCY = 5
 
-DISCOVERY_FILE  = Path("../data/discovery.jsonl")
-SECTIONS_FILE   = Path("../data/sections.jsonl")
-FAILURES_FILE   = Path("../data/failures.jsonl")
-CHECKPOINT_FILE = Path("../data/checkpoint_extract.json")
+def load_urls():
+    with open(INPUT_FILE, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                yield json.loads(line)["url"]
 
-# ---------------------------------------------------------------------------
-# Concurrency / retry settings
-# ---------------------------------------------------------------------------
-
-MAX_CONCURRENCY = 5          # polite — avoid hammering dir.ca.gov
-MAX_RETRIES     = 3
-BASE_BACKOFF    = 2.0        # seconds; doubled each retry
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
+def extract_section(markdown: str):
+    """
+    Example:
+    # §232.63.Preparation of Record for Review
+    """
+    m = re.search(
+    r"^#\s*§\s*([\d.]+)\.?\s*(.*?)\s*$",
+    markdown,
+    re.MULTILINE
 )
-log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# CSS extraction schema
-# ---------------------------------------------------------------------------
-# The breadcrumb box on every page is a <table> or <div> near the top that
-# contains lines like:
-#   "TITLE 8. INDUSTRIAL RELATIONS"
-#   "DIVISION 1. DEPARTMENT OF INDUSTRIAL RELATIONS"
-#   "CHAPTER 1. DIVISION OF WORKERS' COMPENSATION ..."
-#   "Article 2. QME Eligibility"
-#   "Subchapter 14. Petroleum Safety Orders ..."
-#
-# The section heading is an <h3> or rendered as bold text: "§10. Appointment of QMEs."
-#
-# Crawl4AI's JsonCssExtractionStrategy lets us declare selectors declaratively.
-# We extract raw text fields and parse them in Python afterward.
+    if not m:
+        return None, None
 
-EXTRACTION_SCHEMA = {
-    "name": "CCR Section",
-    "baseSelector": "body",          # one record per page
-    "fields": [
-        {
-            # The breadcrumb box — grab ALL text lines inside it
-            "name": "breadcrumb_raw",
-            "selector": "table:first-of-type td, div.disclaimer + table td, "
-                        "blockquote, .breadcrumb, #breadcrumb, "
-                        # fallback: first bordered box before the <hr>
-                        "table td font, table td b",
-            "type": "text",
-            "multiple": True,
-        },
-        {
-            # Section heading: §10. Appointment of QMEs.
-            "name": "section_heading_raw",
-            "selector": "h3, h2, b",
-            "type": "text",
-            "multiple": True,
-        },
-        {
-            # Full body text (we convert to markdown ourselves)
-            "name": "body_text",
-            "selector": "body",
-            "type": "text",
-            "multiple": False,
-        },
-    ],
-}
+    return (
+        m.group(1).rstrip("."),
+        m.group(2).strip(),
+    )
 
-# ---------------------------------------------------------------------------
-# Hierarchy parsing
-# ---------------------------------------------------------------------------
-
-# Patterns that match breadcrumb lines
-_RE_TITLE      = re.compile(r"^TITLE\s+(\d+)\.\s+(.+)$", re.I)
-_RE_DIVISION   = re.compile(r"^DIVISION\s+([\w.]+)\.\s+(.+)$", re.I)
-_RE_CHAPTER    = re.compile(r"^CHAPTER\s+([\w.]+)\.\s+(.+)$", re.I)
-_RE_SUBCHAPTER = re.compile(r"^Subchapter\s+([\w.]+)\.\s+(.+)$", re.I)
-_RE_ARTICLE    = re.compile(r"^Article\s+([\w.]+)\.\s+(.+)$", re.I)
-_RE_GROUP      = re.compile(r"^Group\s+([\w.]+)\.\s+(.+)$", re.I)
-
-# Section heading: §10. Appointment of QMEs.
-_RE_SECTION    = re.compile(r"§\s*(\d[\w.]*)\.\s*(.+?)\.?\s*$")
-
-# URL → section number
-_RE_URL_SECTION = re.compile(r"/(?:t8|title8)/(\d[\w.]*)\.html", re.I)
-
-
-def parse_breadcrumb(lines: list[str]) -> dict:
-    """
-    Walk the raw text lines from the breadcrumb box and extract hierarchy fields.
-    Unknown / empty lines are skipped gracefully.
-    """
-    result = {
-        "title_number": None,
-        "title_name": None,
+def extract_hierarchy(markdown: str):
+    hierarchy = {
+        "title_number": "8",
+        "title_name": "Industrial Relations",
         "division_number": None,
         "division_name": None,
         "chapter_number": None,
@@ -136,298 +48,206 @@ def parse_breadcrumb(lines: list[str]) -> dict:
         "subchapter_name": None,
         "article_number": None,
         "article_name": None,
-        "group_number": None,
-        "group_name": None,
     }
+    
+    m = re.search(r"#\s*§", markdown)
 
-    for raw in lines:
-        line = raw.strip()
+    header = markdown[:m.start()] if m else markdown
+    article_hits = []
+
+    for line in header.splitlines():
+        line = line.strip()
+
         if not line:
             continue
 
-        if m := _RE_TITLE.match(line):
-            result["title_number"] = m.group(1)
-            result["title_name"]   = m.group(2).strip()
-        elif m := _RE_DIVISION.match(line):
-            result["division_number"] = m.group(1)
-            result["division_name"]   = m.group(2).strip()
-        elif m := _RE_CHAPTER.match(line):
-            result["chapter_number"] = m.group(1)
-            result["chapter_name"]   = m.group(2).strip()
-        elif m := _RE_SUBCHAPTER.match(line):
-            result["subchapter_number"] = m.group(1)
-            result["subchapter_name"]   = m.group(2).strip()
-        elif m := _RE_ARTICLE.match(line):
-            result["article_number"] = m.group(1)
-            result["article_name"]   = m.group(2).strip()
-        elif m := _RE_GROUP.match(line):
-            result["group_number"] = m.group(1)
-            result["group_name"]   = m.group(2).strip()
+        m = re.match(r"Division\s+([\w.]+)\.\s*(.+)", line, re.IGNORECASE)
+        if m:
+            hierarchy["division_number"] = m.group(1)
+            hierarchy["division_name"] = m.group(2)
+            continue
 
-    return result
+        m = re.match(r"Chapter\s+([\w.]+)\.\s*(.+)", line, re.IGNORECASE)
+        if m:
+            hierarchy["chapter_number"] = m.group(1)
+            hierarchy["chapter_name"] = m.group(2)
+            continue
 
+        m = re.match(r"Subchapter\s+([\w.]+)\.\s*(.+)", line, re.IGNORECASE)
+        if m:
+            hierarchy["subchapter_number"] = m.group(1)
+            hierarchy["subchapter_name"] = m.group(2)
+            continue
 
-def parse_section_heading(candidates: list[str]) -> tuple[str | None, str | None]:
-    """Return (section_number, section_heading) from the heading candidates."""
-    for raw in candidates:
-        if m := _RE_SECTION.search(raw.strip()):
-            return m.group(1), m.group(2).strip()
-    return None, None
+        m = re.match(
+    r"Article\s+(\d+(?:\.\d+)*)\.?\s*(.+)",
+    line,
+    re.IGNORECASE
+)
+        if m:
+            article_hits.append((m.group(1), m.group(2)))
 
+    if article_hits:
+        hierarchy["article_number"] = article_hits[-1][0]
+        hierarchy["article_name"] = article_hits[-1][1]
 
-def section_number_from_url(url: str) -> str | None:
-    if m := _RE_URL_SECTION.search(url):
-        return m.group(1)
-    return None
+    return hierarchy
 
+def build_breadcrumb(meta):
+    parts = [f"Title {meta['title_number']}: {meta['title_name']}"]
+    
+    if meta["division_number"]:
+        parts.append(f"Division {meta['division_number']}: {meta['division_name']}")
 
-def build_breadcrumb_path(h: dict, section_number: str | None) -> str:
-    """Human-readable breadcrumb, e.g. 'Title 8 > Division 1 > Chapter 1 > Article 2 > §10'"""
-    parts = []
-    if h.get("title_number"):
-        parts.append(f"Title {h['title_number']}")
-    if h.get("division_number"):
-        parts.append(f"Division {h['division_number']}")
-    if h.get("chapter_number"):
-        parts.append(f"Chapter {h['chapter_number']}")
-    if h.get("subchapter_number"):
-        parts.append(f"Subchapter {h['subchapter_number']}")
-    if h.get("article_number"):
-        parts.append(f"Article {h['article_number']}")
-    if h.get("group_number"):
-        parts.append(f"Group {h['group_number']}")
-    if section_number:
-        parts.append(f"§{section_number}")
+    if meta["chapter_number"]:
+        parts.append(f"Chapter {meta['chapter_number']}: {meta['chapter_name']}")
+
+    if meta["subchapter_number"]:
+        parts.append(f"Subchapter {meta['subchapter_number']}: {meta['subchapter_name']}")
+
+    if meta["article_number"]:
+        parts.append(f"Article {meta['article_number']}: {meta['article_name']}")
+
     return " > ".join(parts)
 
-
-def build_citation(title_number: str | None, section_number: str | None) -> str | None:
-    if title_number and section_number:
-        return f"{title_number} CCR § {section_number}"
-    if section_number:
-        return f"8 CCR § {section_number}"   # T8 default
-    return None
-
-
-def body_to_markdown(raw_text: str) -> str:
+def trim_content(markdown: str):
     """
-    Light cleanup of the raw body text.
-    Crawl4AI already strips HTML; we just normalize whitespace and
-    remove the boilerplate disclaimer header.
+    Keep only section content.
+    Remove crawler/navigation noise.
     """
-    lines = raw_text.splitlines()
-    cleaned = []
-    skip_phrases = (
-        "This information is provided free of charge",
-        "user and no representation",
-        "New Query",
-        "Return to index",
-        "New query",
-    )
-    for line in lines:
-        stripped = line.strip()
-        if any(stripped.startswith(p) for p in skip_phrases):
-            continue
-        cleaned.append(stripped)
+    match = re.search(r"#\s*§", markdown)
 
-    # Collapse multiple blank lines to one
-    text = "\n".join(cleaned)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text
+    if not match:
+        return markdown.strip()
 
+    content = markdown[match.start():]
 
-# ---------------------------------------------------------------------------
-# Checkpoint helpers
-# ---------------------------------------------------------------------------
+    content = re.sub(r"!\[.*?\]\(.*?\)", "", content, flags=re.DOTALL)
+    content = re.sub(r"\[Go Back.*?\)", "", content, flags=re.DOTALL)
+    content = re.sub(r"\* \* \*", "", content)
+    content = re.sub(
+    r"\n\|\s*\|\s*\n\|\s*---\s*\|.*$",
+    "",
+    content,
+    flags=re.S
+)
+    content = re.sub(
+    r"#\s*§\s*",
+    "# § ",
+    content
+)
 
-def load_checkpoint() -> set[str]:
-    if CHECKPOINT_FILE.exists():
-        data = json.loads(CHECKPOINT_FILE.read_text())
-        return set(data.get("done", []))
-    return set()
+    return content.strip()
 
-
-def save_checkpoint(done: set[str]) -> None:
-    CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(done)}, indent=2))
-
-
-# ---------------------------------------------------------------------------
-# Per-URL fetch + extract with retries
-# ---------------------------------------------------------------------------
-
-async def fetch_section(
-    crawler: AsyncWebCrawler,
-    url: str,
-    run_cfg: CrawlerRunConfig,
-) -> dict | None:
+def split_legal_sections(content: str):
     """
-    Fetch a single section URL, extract structured data.
-    Returns None on permanent failure (after all retries).
+    Splits regulation into:
+      - body
+      - authority/reference note
+      - history
     """
-    strategy = JsonCssExtractionStrategy(EXTRACTION_SCHEMA, verbose=False)
-    cfg = CrawlerRunConfig(
-        wait_until=run_cfg.wait_until,
-        exclude_external_links=run_cfg.exclude_external_links,
-        extraction_strategy=strategy,
+
+    history = None
+    authority_note = None
+
+    history_match = re.search(
+        r"\nHISTORY\b",
+        content,
+        flags=re.IGNORECASE
     )
 
-    last_error = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            result = await crawler.arun(url, config=cfg)
+    if history_match:
+        history = content[history_match.start():].strip()
+        content = content[:history_match.start()].rstrip()
 
-            if not result.success:
-                raise RuntimeError(f"crawl4ai reported failure: {result.error_message}")
+    note_match = re.search(
+        r"\n(?:NOTE|Note):?\s*Authority cited:",
+        content,
+        flags=re.IGNORECASE
+    )
 
-            # Parse the CSS-extracted JSON
-            raw = json.loads(result.extracted_content or "[]")
-            if not raw:
-                raise ValueError("Empty extraction result")
+    if note_match:
+        authority_note = content[note_match.start():].strip()
+        content = content[:note_match.start()].rstrip()
 
-            page = raw[0] if isinstance(raw, list) else raw
+    return {
+        "body": content.strip(),
+        "authority_note": authority_note,
+        "history": history
+    }
 
-            # --- Hierarchy ---
-            breadcrumb_lines: list[str] = page.get("breadcrumb_raw") or []
-            hierarchy = parse_breadcrumb(breadcrumb_lines)
+async def process_url(crawler, url, run_cfg):
+    try:
+        result = await crawler.arun(url, config=run_cfg)
+        
+        if not result.success:
+            print(f"[FAIL] {url}")
+            return None
 
-            # --- Section heading ---
-            heading_candidates: list[str] = page.get("section_heading_raw") or []
-            sec_num_from_heading, sec_heading = parse_section_heading(heading_candidates)
+        markdown = result.markdown or ""
+        section_number, section_heading = extract_section(markdown)
+        content = trim_content(markdown)
 
-            # Fall back to URL-derived section number if heading parse missed it
-            sec_num = sec_num_from_heading or section_number_from_url(url)
+        parts = split_legal_sections(content)
 
-            # Title number defaults to 8 for T8
-            if not hierarchy.get("title_number"):
-                hierarchy["title_number"] = "8"
-            if not hierarchy.get("title_name"):
-                hierarchy["title_name"] = "Industrial Relations"
+        if not section_number:
+            print(f"[WARN] No section found: {url}")
+            return None
 
-            # --- Content ---
-            body_raw = page.get("body_text") or result.markdown or ""
-            content_md = body_to_markdown(body_raw)
+        hierarchy = extract_hierarchy(markdown)
 
-            record = {
-                # Canonical hierarchy
-                "title_number":      hierarchy["title_number"],
-                "title_name":        hierarchy["title_name"],
-                "division_number":   hierarchy["division_number"],
-                "division_name":     hierarchy["division_name"],
-                "chapter_number":    hierarchy["chapter_number"],
-                "chapter_name":      hierarchy["chapter_name"],
-                "subchapter_number": hierarchy["subchapter_number"],
-                "subchapter_name":   hierarchy["subchapter_name"],
-                "article_number":    hierarchy["article_number"],
-                "article_name":      hierarchy["article_name"],
-                "group_number":      hierarchy["group_number"],
-                "group_name":        hierarchy["group_name"],
-                # Section identity
-                "section_number":    sec_num,
-                "section_heading":   sec_heading,
-                "citation":          build_citation(hierarchy["title_number"], sec_num),
-                "breadcrumb_path":   build_breadcrumb_path(hierarchy, sec_num),
-                # Content
-                "content_markdown":  content_md,
-                # Provenance
-                "source_url":        url,
-                "retrieved_at":      datetime.now(timezone.utc).isoformat(),
-                # QA
-                "_attempts":         attempt,
-            }
-            return record
+        doc = {
+    **hierarchy,
+    "document_type": "regulation",
+    "jurisdiction": "California",
 
-        except Exception as exc:
-            last_error = exc
-            wait = BASE_BACKOFF ** attempt
-            log.warning(
-                "[attempt %d/%d] %s — %s — retrying in %.1fs",
-                attempt, MAX_RETRIES, url, exc, wait,
-            )
-            await asyncio.sleep(wait)
+    "section_number": section_number,
+    "section_heading": section_heading,
+    "citation": f"8 CCR § {section_number}",
 
-    log.error("PERMANENT FAILURE after %d attempts: %s — %s", MAX_RETRIES, url, last_error)
-    return None
+    "breadcrumb_path": build_breadcrumb(hierarchy),
+    "source_url": url,
 
+    "content_markdown": parts["body"],
+    "authority_note": parts["authority_note"],
+    "history": parts["history"],
 
-# ---------------------------------------------------------------------------
-# Main extraction loop
-# ---------------------------------------------------------------------------
+    "retrieved_at": datetime.now(timezone.utc).isoformat(),
+}
 
-async def extract() -> None:
-    if not DISCOVERY_FILE.exists():
-        log.error("discovery.jsonl not found at %s — run discover.py first", DISCOVERY_FILE)
-        return
+        print(f"[OK] {section_number}")
+        return doc
 
-    urls = [
-        json.loads(line)["url"]
-        for line in DISCOVERY_FILE.read_text().splitlines()
-        if line.strip()
-    ]
-    log.info("Loaded %d URLs from %s", len(urls), DISCOVERY_FILE)
+    except Exception as e:
+        print(f"[ERR] {url}: {e}")
+        return None
 
-    done = load_checkpoint()
-    log.info("Checkpoint: %d already extracted, %d remaining", len(done), len(urls) - len(done))
-
-    pending = [u for u in urls if u not in done]
-
-    SECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    FAILURES_FILE.parent.mkdir(parents=True, exist_ok=True)
+async def main():
+    urls = list(load_urls())
+    
+    print(f"Loaded {len(urls)} URLs")
 
     browser_cfg = BrowserConfig(headless=True, java_script_enabled=False)
-    run_cfg     = CrawlerRunConfig(
-        wait_until="domcontentloaded",
-        exclude_external_links=True,
-    )
+    run_cfg = CrawlerRunConfig(wait_until="domcontentloaded")
+    sem = asyncio.Semaphore(CONCURRENCY)
 
-    sem = asyncio.Semaphore(MAX_CONCURRENCY)
-    success_count = 0
-    failure_count = 0
+    async with AsyncWebCrawler(config=browser_cfg) as crawler:
+        async def worker(url):
+            async with sem:
+                return await process_url(crawler, url, run_cfg)
 
-    # Append mode — safe to resume
-    sections_fh = SECTIONS_FILE.open("a", encoding="utf-8")
-    failures_fh = FAILURES_FILE.open("a", encoding="utf-8")
+        docs = await asyncio.gather(*[worker(url) for url in urls])
 
-    try:
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
+    docs = [d for d in docs if d]
 
-            async def worker(url: str) -> None:
-                nonlocal success_count, failure_count
-                async with sem:
-                    record = await fetch_section(crawler, url, run_cfg)
+    Path(OUTPUT_FILE).parent.mkdir(parents=True, exist_ok=True)
 
-                    if record:
-                        sections_fh.write(json.dumps(record) + "\n")
-                        sections_fh.flush()
-                        success_count += 1
-                        done.add(url)
-                        if success_count % 50 == 0:
-                            save_checkpoint(done)
-                            log.info(
-                                "Checkpoint saved — %d extracted, %d failed",
-                                success_count, failure_count,
-                            )
-                    else:
-                        failure_count += 1
-                        failures_fh.write(json.dumps({
-                            "url": url,
-                            "failed_at": datetime.now(timezone.utc).isoformat(),
-                        }) + "\n")
-                        failures_fh.flush()
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        for doc in docs:
+            f.write(json.dumps(doc, ensure_ascii=False) + "\n")
 
-            await asyncio.gather(*[worker(u) for u in pending])
-
-    finally:
-        sections_fh.close()
-        failures_fh.close()
-        save_checkpoint(done)
-
-    log.info(
-        "\nExtraction complete — %d succeeded, %d failed (permanent)",
-        success_count, failure_count,
-    )
-    if failure_count:
-        log.warning("See %s for failed URLs — re-run extract.py to retry them.", FAILURES_FILE)
-
+    print(f"\nSaved {len(docs)} documents")
+    print(f"Output: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
-    asyncio.run(extract())
+    asyncio.run(main())

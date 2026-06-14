@@ -70,4 +70,6 @@ This reduced noise while preserving labor, safety, and workplace regulation cont
 
 - Finished CLI, ingestion. Found that duplication occurred in the records. This called for proper de-duplication.
 
-- Found that there was an easier way to simply obtain the leaf nodes as everything about the node that the chunks required was already in the 
+- Found that there was an easier way to simply obtain the leaf nodes as everything about the node that the chunks required was already in the leaf node.
+
+- Site was down for a while. Took time to build the agent GUI.

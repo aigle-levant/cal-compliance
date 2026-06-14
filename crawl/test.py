@@ -1,21 +1,8 @@
-import asyncio
-from crawl4ai import AsyncWebCrawler
+import requests
 
-async def main():
+url = "https://dir.ca.gov/t8/9794.html"
 
-    async with AsyncWebCrawler() as crawler:
+r = requests.get(url, timeout=30)
 
-        result = await crawler.arun(
-            "https://leginfo.legislature.ca.gov/faces/codedisplayexpand.xhtml?tocCode=LAB"
-        )
-
-        print(result.success)
-
-        if not result.success:
-            print(result.error_message)
-            return
-
-        print(len(result.links["internal"]))
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print(r.status_code)
+print(len(r.text))
