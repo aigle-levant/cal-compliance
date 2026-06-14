@@ -1,20 +1,7 @@
-from collections import defaultdict
-import json
+from langchain_ollama import OllamaEmbeddings
 
-groups = defaultdict(list)
+emb = OllamaEmbeddings(model="bge-m3")
 
-with open("../data/chunks.jsonl", encoding="utf8") as f:
-    for line in f:
-        row = json.loads(line)
-        groups[row["chunk_id"]].append(row)
+vec = emb.embed_query("hello")
 
-for cid, rows in groups.items():
-    texts = {r["text"][:200] for r in rows}
-
-    if len(texts) > 1:
-        print("\n", cid)
-
-        for r in rows:
-            print("URL:", r["source_url"])
-            print("TITLE:", r.get("section_title"))
-            print()
+print(len(vec))
