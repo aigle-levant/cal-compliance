@@ -1,29 +1,122 @@
 # Cal Compliance Agent
 
-Compliance agent for T8 California. Built with Crawl4AI, Streamlit, Python, Ollama, Supabase. Hosted on HF Spaces.
+Compliance agent for T8 of California Laws. Built with Crawl4AI, Streamlit, Python, HuggingFace, Supabase. Hosted on [HF Spaces](https://huggingface.co/spaces/aiglelevant/compliance-agent).
 
-## Setup
+![alt text](image.png)
 
-This pipeline leverages a local-first architecture using **Ollama** and **Llama 3.2** to handle intelligent URL filtering and graph pruning asynchronously. 
+## Features
 
-To run this pipeline locally, follow these quick setup steps:
+- Discovers regulation URLs
+- Extracts URLs into structured records
+- Chunks and indexes for retrieval
+- Provide citation-grounded compliance answers through a RAG-based agent
 
-1. **Install Ollama:** Download and install the background engine from [ollama.com](https://ollama.com).
+## Architecture
 
-2. **Pull the Model:** Open your terminal and download the lightweight 3B parameter model:
+```text
+DISCOVERY -> EXTRACTION & VALIDATION -> CHUNKING -> INGESTION INTO SUPABASE -> RAG AGENT WITH STREAMLIT UI
+```
+
+## Tech stack
+
+- Crawl4AI: Web crawling and scraping
+- Python
+- Supabase [pgvector]: For ingestion
+- Streamlit: For UI, works best with Python
+- HuggingFace Embeddings, namely BAAI/BGE-M3 and Qwen
+- HF's inference API
+
+## Repository structure
+
+```md
+crawl/
+├── discover.py
+├── extract.py
+├── chunk.py
+
+agent/
+├── ingest.py
+
+gui/
+├── interface.py
+├── agent.py
+
+data/
+├── discovery.jsonl
+├── sections.jsonl
+├── chunks.jsonl
+├── summary.jsonl
+├── coverage.jsonl
+```
+
+## Installation
+
+### Prerequisites
+
+- Python 3.10+
+- A [Supabase](https://supabase.com) project with the `match_compliance_chunks` RPC function and pgvector enabled
+- A [HuggingFace](https://huggingface.co/settings/tokens) account and token (free tier works)
+
+### Clone and install
+
 ```bash
-   ollama pull llama3.2
-```
-3. Verify the Server: Ensure Ollama is actively running in your system tray. The script will automatically connect to your local endpoint at http://localhost:11434/v1.
-4. Install required packages
-
-```
-Bash
+git clone https://github.com/your-username/cal-compliance-agent
+cd cal-compliance-agent
 pip install -r requirements.txt
-python -m extract
 ```
 
-- Tried parsing, faced a real block
+### Install Playwright (required by Crawl4AI)
+
+```bash
+playwright install chromium
+```
+
+Crawl4AI uses a headless browser under the hood. This one-time install is required before running the discovery pipeline.
+
+### Set up environment variables
+
+Create a `.env` file in the project root:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+HF_TOKEN=hf_your_token_here
+```
+
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are found in your Supabase project under Settings -> API
+- `HF_TOKEN` is from your HuggingFace account under Settings -> Access Tokens
+
+### Run the following
+
+```bash
+
+cd crawl
+python -m discover
+python -m extract
+python -m chunk
+
+cd ..
+cd agent
+python -m ingest
+```
+
+Then
+
+```bash
+cd ..
+cd gui
+python -m interface
+```
+
+## Design Decisions
+
+### CCR vs T8
+
+Initially, I was referenced to use [CCR | Westlaw](https://govt.westlaw.com/calregs). However, Westlaw is heavily protected by Cloudflare Turnstile.
+
+It managed to turn futile all attempts, including stealth mode, standard crawling, undetected browser, etc.
+
+Some example responses include:
 
 ```md
 ## Performing security verification
@@ -33,44 +126,98 @@ Ray ID: `a0980e763cd7426e`
 Performance and Security by [Cloudflare](https://www.cloudflare.com?utm_source=challenge&utm_campaign=m)[Privacy](https://www.cloudflare.com/privacypolicy/)
 ```
 
-- Inquired about this, was asked to use https://dir.ca.gov/ instead. Which works with normal crawler.
+Hence, the decision was to shift to [dir.ca.gov](https://dir.ca.gov/).
 
-- Used normal crawler. Works fine with new URL. Tried discovery, extraction, coverage logging. Found out that unnecessary junk content kept appearing.
+### T8
 
-- Used deep crawler. Some pages were unavailable or showed 403 forbidden even for a normal user. Skipped them.
+Focused on Title 8 regulations including:
 
-- Noticed the site has a sitemap. Utilized it. Also discovered the robots.txt explicitly won't be allowing XML stuff, so went with the HTML one there. The DIR sitemap contains administrative pages, social links, and non-regulatory resources.
+- Cal/OSHA
+- Division of Workers' Compensation
+- Workers' Compensation Appeals Board
+- Division of Labor Standards Enforcement
+- Industrial Welfare Commission
+- Division of Labor Statistics and Research
+- California Apprenticeship Council
+- Office of the Director
 
-To improve retrieval quality, discovery was restricted to compliance-relevant divisions:
+### Discover, Extract, Chunk
 
-- Legal Info: California:
-  - Has codes and specific legal texts on various Californian laws
-- T8: Has information on:
-  - Cal/OSHA
-  - Division of Workers' Compensation
-  - Workers' Compensation Appeals Board
-  - Division of Labor Standards Enforcement and Industrial Welfare Commission
-  - Self Insurance Plans
-  - Division of Labor Statistics and Research
-  - California Apprenticeship Council
-  - Office of the Director
+Each regulation section is transformed into a structured record containing:
 
-This reduced noise while preserving labor, safety, and workplace regulation content.
+- Title
+- Division
+- Chapter
+- Subchapter
+- Article
+- Section Number
+- Section Heading
+- Citation
+- Breadcrumb Path
+- Source URL
+- Retrieved Timestamp
+- Markdown Content
 
-- Saw leginfo didn't work as expected, tested it using test.py. Modified discover.py acc to its results.
+The extraction pipeline performs:
 
-- Found out that T8 has deeply nested URLs. Leginfo doesn't. Got leginfo urls first, then focused on T8.
+- Markdown cleanup
+- Navigation removal
+- Boilerplate removal
+- Hierarchy reconstruction
+- Schema validation
 
-- Note: the extraction process can take time!
+### Chunking
 
-- Ran the jsonl file several times over with AI to check if any improvements can be made according to the schema. Obtained the final version at my 5th run through.
+Regulations are converted into overlapping chunks suitable for vector retrieval.
 
-- Extracted, validated and chunked T8 and LegInfo pages. Of which, 1 page from T8 failed to be extracted due to server-side HTTP/2 protocol errors. A few pages have missing division id and name. These were handled too.
+Each chunk preserves:
 
-- Found out entirety of Leginfo was missing from the chunks, so realised this had to do with the URL structure being different for both T8 and LegInfo, decided to structure extract.py acc to this.
+* Citation
+* Section Number
+* Hierarchy Metadata
+* Breadcrumb Path
+* Source URL
 
-- Finished CLI, ingestion. Found that duplication occurred in the records. This called for proper de-duplication.
+This ensures every retrieved chunk remains traceable to its originating regulation.
 
-- Found that there was an easier way to simply obtain the leaf nodes as everything about the node that the chunks required was already in the leaf node.
+### Leaf Node Optimization
 
-- Site was down for a while. Took time to build the agent GUI.
+An early design reconstructed hierarchy after extraction.
+
+Later analysis showed leaf nodes already contained sufficient metadata.
+
+Switched to direct leaf-node extraction.
+
+### Duplicate Records
+
+During ingestion, duplicate regulatory records appeared.
+
+Implemented de-duplication and idempotent indexing before ingestion.
+
+## Known limitations
+
+- A small number of pages could not be retrieved due to server-side issues.
+- Some regulations do not expose complete hierarchy metadata.
+- Coverage is high but not guaranteed to be 100%.
+- Regulatory interpretations should not be considered legal advice.
+
+The system prioritizes transparency and reporting of limitations rather than assuming completeness.
+
+## Future improvements
+
+Given additional time:
+
+1. Persistent crawl checkpoints
+2. Automated extraction regression testing
+3. Expanded hierarchy resolution
+4. Improved metadata enrichment
+5. Incremental crawl updates
+6. Enhanced coverage analytics
+
+## Feedback
+
+If you have any feedback, please reach out to me at [aiglelevant@gmail.com](mailto:aiglelevant@gmail.com)
+
+## License
+
+[MIT](https://choosealicense.com/licenses/mit/)

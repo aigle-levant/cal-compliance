@@ -1,240 +1,180 @@
 import os
-
 from dotenv import load_dotenv
 from supabase import create_client
 
-from langchain_ollama import OllamaEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEmbeddings
+from huggingface_hub import InferenceClient
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-TOP_K_PER_QUERY = 5
-FINAL_CONTEXT_SIZE = 15
+HF_TOKEN = os.getenv("HF_TOKEN")
+TOP_K = 15
 SIMILARITY_THRESHOLD = 0.50
+
 
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
 
-embeddings = OllamaEmbeddings(
-    model="bge-m3"
+embeddings = HuggingFaceEmbeddings(
+    model_name="BAAI/bge-m3"
 )
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=GEMINI_API_KEY,
-    temperature=0
+llm = InferenceClient(
+    api_key=HF_TOKEN
 )
 
-def expand_query(question: str):
+def generate(prompt: str) -> str:
+    response = llm.chat.completions.create(
+        model="Qwen/Qwen3-8B-Instruct",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        max_tokens=1024,
+        temperature=0
+    )
 
-    prompt = f"""
-You are helping retrieve CCR regulations.
+    return response.choices[0].message.content
 
-Generate 5 search queries that would help
-retrieve regulations relevant to this question.
 
-Question:
-{question}
-
-Rules:
-- one query per line
-- no numbering
-- no explanations
-"""
-
-    response = llm.invoke(prompt)
-
-    queries = [
-        line.strip()
-        for line in response.content.split("\n")
-        if line.strip()
-    ]
-
-    queries.insert(0, question)
-
-    return queries[:6]
-
-def retrieve(query):
-
-    vector = embeddings.embed_query(query)
+def retrieve(query: str):
+    query_embedding = embeddings.embed_query(query)
 
     result = (
         supabase.rpc(
             "match_compliance_chunks",
             {
-                "query_embedding": vector,
-                "match_count": TOP_K_PER_QUERY
+                "query_embedding": query_embedding,
+                "match_count": TOP_K
             }
         )
         .execute()
     )
 
-    rows = result.data or []
+    matches = result.data or []
 
-    rows = [
+    matches = [
         row
-        for row in rows
+        for row in matches
         if row["similarity"] >= SIMILARITY_THRESHOLD
     ]
 
-    return rows
-
-def search(question):
-
-    queries = expand_query(question)
-
-    all_results = []
-
-    for q in queries:
-        all_results.extend(
-            retrieve(q)
-        )
-
-    dedup = {}
-
-    for row in all_results:
-
-        chunk_id = row["chunk_id"]
-
-        if (
-            chunk_id not in dedup
-            or
-            row["similarity"]
-            >
-            dedup[chunk_id]["similarity"]
-        ):
-            dedup[chunk_id] = row
-
-    results = list(
-        dedup.values()
-    )
-
-    results.sort(
+    matches.sort(
         key=lambda x: x["similarity"],
         reverse=True
     )
 
-    return results[:FINAL_CONTEXT_SIZE]
+    return matches[:TOP_K]
 
-def build_context(results):
 
-    context = []
+def build_context(matches):
+    sections = []
 
-    for r in results:
-
-        context.append(
+    for row in matches:
+        sections.append(
             f"""
-Citation: {r['citation']}
-Section Number: {r.get('section_number')}
+Citation: {row.get('citation')}
+
+Section Number:
+{row.get('section_number')}
+
+Section Heading:
+{row.get('section_heading')}
 
 Content:
-{r['text']}
+{row.get('text')}
 """
         )
 
-    return "\n\n".join(context)
+    return "\n\n".join(sections)
 
-def extract_sources(results):
 
+def extract_sources(matches):
     seen = set()
     sources = []
 
-    for r in results:
+    for row in matches:
+        citation = row.get("citation")
 
-        citation = r.get("citation")
+        if citation in seen:
+            continue
 
-        if citation and citation not in seen:
-            seen.add(citation)
-            sources.append(citation)
+        seen.add(citation)
+
+        sources.append(
+            {
+                "citation": citation,
+                "section_number": row.get("section_number"),
+                "section_heading": row.get("section_heading"),
+                "source_url": row.get("source_url")
+            }
+        )
 
     return sources
 
-def answer_question(question):
+def answer_question(question: str):
+    matches = retrieve(question)
 
-    results = search(question)
-
-    if not results:
-
+    if not matches:
         return {
-            "answer":
-            "I could not find relevant CCR regulations.",
-            "sources": []
+            "answer": "I could not find relevant CCR regulations.",
+            "sources": [],
+            "matches": []
         }
 
-    context = build_context(results)
+    context = build_context(matches)
 
     prompt = f"""
-You are a California Code of Regulations
-Compliance Assistant.
+You are a California Code of Regulations Compliance Assistant.
 
-You help facility operators identify
-regulations that may apply to them.
+Use ONLY the supplied CCR regulations.
 
 Rules:
+1. Never invent CCR citations.
+2. Explain why regulations apply.
+3. Cite regulations.
+4. If information is missing, say so.
+5. End every answer with:
 
-1. Use ONLY supplied regulations.
-2. Never invent CCR sections.
-3. Explain why regulations apply.
-4. Ask follow-up questions if needed.
-5. Include CCR citations.
-6. If regulations are insufficient,
-   explicitly say so.
-7. End with:
-
-This information is educational only
-and is not legal advice.
+This information is educational only and is not legal advice.
 
 QUESTION:
-
 {question}
 
 REGULATIONS:
-
 {context}
 """
 
-    response = llm.invoke(prompt)
+    answer = generate(prompt)
 
     return {
-        "answer": response.content,
-        "sources": extract_sources(results),
-        "matches": results
+        "answer": answer,
+        "sources": extract_sources(matches),
+        "matches": matches
     }
 
 if __name__ == "__main__":
-
-    print("\nCCR Compliance Agent")
-    print("Type exit to quit.\n")
-
     while True:
+        query = input("\nQuestion: ").strip()
 
-        question = input("Question: ")
-
-        if question.lower() in [
-            "exit",
-            "quit"
-        ]:
+        if query.lower() in {"exit", "quit"}:
             break
 
-        result = answer_question(
-            question
-        )
+        response = answer_question(query)
 
-        print("\n" + "=" * 80)
-        print("ANSWER")
-        print("=" * 80)
+        print("\n=== ANSWER ===\n")
+        print(response["answer"])
 
-        print(result["answer"])
-
-        print("\n" + "=" * 80)
-        print("SOURCES")
-        print("=" * 80)
-
-        for source in result["sources"]:
-            print(source)
+        print("\n=== SOURCES ===\n")
+        for source in response["sources"]:
+            print(
+                f"{source['citation']} | "
+                f"{source['section_number']} | "
+                f"{source['section_heading']}"
+            )

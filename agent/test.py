@@ -1,136 +1,93 @@
-import os
-from dotenv import load_dotenv
-
-from supabase import create_client
 from langchain_ollama import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
-load_dotenv()
+import numpy as np
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
+QUERY = "What is an Agreed Medical Evaluator?"
 
-embeddings = OllamaEmbeddings(
+
+def cosine_similarity(a, b):
+    a = np.array(a)
+    b = np.array(b)
+
+    return np.dot(a, b) / (
+        np.linalg.norm(a) * np.linalg.norm(b)
+    )
+
+
+print("Loading embeddings...\n")
+
+ollama_embeddings = OllamaEmbeddings(
     model="bge-m3"
 )
 
-TEST_CASES = [
-    {
-        "query": "What is Accreditation?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is an Appeals Board?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is a Claims Administrator?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is an Agreed Medical Evaluator?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is a Qualified Medical Evaluator?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is a Panel QME?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "What is a Treating Physician?",
-        "expected": "8 CCR § 1"
-    },
-    {
-        "query": "Appointment of QMEs",
-        "expected": "8 CCR § 10"
-    }
-]
+hf_embeddings = HuggingFaceEmbeddings(
+    model_name="BAAI/bge-m3"
+)
 
+print("Generating embeddings...\n")
 
-def search(query, top_k=10):
-    vector = embeddings.embed_query(query)
+ollama_vector = ollama_embeddings.embed_query(
+    QUERY
+)
 
-    result = supabase.rpc(
-        "match_compliance_chunks",
-        {
-            "query_embedding": vector,
-            "match_count": top_k
-        }
-    ).execute()
+hf_vector = hf_embeddings.embed_query(
+    QUERY
+)
 
-    return result.data or []
+print("=" * 60)
+print("VECTOR INFORMATION")
+print("=" * 60)
 
+print(
+    f"Ollama dimension: {len(ollama_vector)}"
+)
 
-def evaluate():
-    top1 = 0
-    top3 = 0
-    top5 = 0
+print(
+    f"HuggingFace dimension: {len(hf_vector)}"
+)
 
-    total = len(TEST_CASES)
+similarity = cosine_similarity(
+    ollama_vector,
+    hf_vector
+)
 
-    for test in TEST_CASES:
+print(
+    f"Cosine similarity: {similarity:.6f}"
+)
 
-        query = test["query"]
-        expected = test["expected"]
+print()
 
-        print("\n" + "=" * 80)
-        print(query)
-        print("=" * 80)
-
-        results = search(query)
-
-        citations = [
-            row["citation"]
-            for row in results
-        ]
-
-        for idx, row in enumerate(results[:5], start=1):
-
-            print(
-                f"{idx}. "
-                f"{row['citation']} "
-                f"({row['similarity']:.4f})"
-            )
-
-        if len(citations) > 0 and citations[0] == expected:
-            top1 += 1
-
-        if expected in citations[:3]:
-            top3 += 1
-
-        if expected in citations[:5]:
-            top5 += 1
-
-    print("\n")
-    print("=" * 80)
-    print("RETRIEVAL REPORT")
-    print("=" * 80)
-
+if len(ollama_vector) != len(hf_vector):
     print(
-        f"Top-1 Accuracy: "
-        f"{top1}/{total} "
-        f"({100*top1/total:.1f}%)"
+        "❌ Dimension mismatch. "
+        "Do not switch models."
     )
 
+elif similarity > 0.99:
     print(
-        f"Top-3 Accuracy: "
-        f"{top3}/{total} "
-        f"({100*top3/total:.1f}%)"
+        "✅ Embeddings are effectively identical."
+    )
+    print(
+        "You can likely replace "
+        "OllamaEmbeddings with "
+        "HuggingFaceEmbeddings "
+        "without re-embedding."
     )
 
+elif similarity > 0.95:
     print(
-        f"Top-5 Accuracy: "
-        f"{top5}/{total} "
-        f"({100*top5/total:.1f}%)"
+        "⚠️ Very similar but not identical."
+    )
+    print(
+        "Run retrieval tests before deploying."
     )
 
-
-if __name__ == "__main__":
-    evaluate()
+else:
+    print(
+        "❌ Embeddings differ significantly."
+    )
+    print(
+        "Do NOT switch without re-embedding."
+    )
