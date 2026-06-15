@@ -1,5 +1,3 @@
-# extract.py
-
 import asyncio
 import json
 import re
@@ -18,10 +16,6 @@ def load_urls():
                 yield json.loads(line)["url"]
 
 def extract_section(markdown: str):
-    """
-    Example:
-    # §232.63.Preparation of Record for Review
-    """
     m = re.search(
     r"^#\s*§\s*([\d.]+)\.?\s*(.*?)\s*$",
     markdown,
@@ -111,10 +105,6 @@ def build_breadcrumb(meta):
     return " > ".join(parts)
 
 def trim_content(markdown: str):
-    """
-    Keep only section content.
-    Remove crawler/navigation noise.
-    """
     match = re.search(r"#\s*§", markdown)
 
     if not match:
@@ -140,13 +130,6 @@ def trim_content(markdown: str):
     return content.strip()
 
 def split_legal_sections(content: str):
-    """
-    Splits regulation into:
-      - body
-      - authority/reference note
-      - history
-    """
-
     history = None
     authority_note = None
 
@@ -191,7 +174,7 @@ async def process_url(crawler, url, run_cfg):
         parts = split_legal_sections(content)
 
         if not section_number:
-            print(f"[WARN] No section found: {url}")
+            print(f"[WARNING] No section found: {url}")
             return None
 
         hierarchy = extract_hierarchy(markdown)
@@ -219,7 +202,7 @@ async def process_url(crawler, url, run_cfg):
         return doc
 
     except Exception as e:
-        print(f"[ERR] {url}: {e}")
+        print(f"[ERROR] {url}: {e}")
         return None
 
 async def main():
@@ -246,8 +229,7 @@ async def main():
         for doc in docs:
             f.write(json.dumps(doc, ensure_ascii=False) + "\n")
 
-    print(f"\nSaved {len(docs)} documents")
-    print(f"Output: {OUTPUT_FILE}")
+    print(f"\nSaved {len(docs)} documents to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     asyncio.run(main())

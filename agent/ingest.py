@@ -12,7 +12,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 INPUT_FILE = "../data/chunks.jsonl"
-BATCH_SIZE = 250
+BATCH_SIZE = 25
 
 supabase = create_client(
     SUPABASE_URL,
@@ -125,10 +125,13 @@ def insert_batch(chunks):
     ]
 
     result = (
-        supabase
-        .table("compliance_data")
-        .insert(rows)
-        .execute()
+    supabase
+    .table("compliance_data")
+    .upsert(
+        rows,
+        on_conflict="chunk_id"
+    )
+    .execute()
     )
 
     print(
