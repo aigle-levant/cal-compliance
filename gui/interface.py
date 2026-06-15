@@ -6,18 +6,17 @@ def main():
     # Page Configuration
     # --------------------------------------------------
     st.set_page_config(
-        page_title="CCR Compliance Agent",
-        page_icon="⚖️",
+        page_title="Cal Compliance Agent",
         layout="wide"
     )
 
     # --------------------------------------------------
     # Header
     # --------------------------------------------------
-    st.title("⚖️ CCR Compliance Agent")
+    st.title("Cal Compliance Agent")
 
     st.markdown(
-        "Ask questions about the California Code of Regulations (CCR).\n\n"
+        "Ask questions about the Californian Law.\n\n"
         "The assistant retrieves relevant regulations from a vector database, "
         "grounds responses in retrieved text, and provides citations."
     )
@@ -31,7 +30,7 @@ def main():
         st.header("About")
         st.markdown(
             "**Features**\n"
-            "- CCR Retrieval-Augmented Generation (RAG)\n"
+            "- Retrieval-Augmented Generation (RAG)\n"
             "- Semantic Search\n"
             "- Citation Grounding\n"
             "- Query Expansion\n"
@@ -65,7 +64,7 @@ def main():
     # --------------------------------------------------
     # User Input & Assistant Response
     # --------------------------------------------------
-    if question := st.chat_input("Ask a CCR compliance question..."):
+    if question := st.chat_input("Ask me a compliance question..."):
         
         # Append and display user message
         st.session_state.messages.append({"role": "user", "content": question})
@@ -129,7 +128,7 @@ def main():
     # Footer
     # --------------------------------------------------
     st.divider()
-    st.caption("CCR Compliance Agent • RAG + Supabase + Gemini + BGE-M3")
+    st.caption("Cal Compliance Agent • RAG + Supabase + Agentic AI")
 
 if __name__ == "__main__":
     main()
