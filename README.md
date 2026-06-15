@@ -1,5 +1,6 @@
-# ccr-compliance-novulis
-Assignment for Novulis Consulting.
+# Cal Compliance Agent
+
+Compliance agent for T8 California. Built with Crawl4AI, Streamlit, Python, Ollama, Supabase. Hosted on HF Spaces.
 
 ## Setup
 
