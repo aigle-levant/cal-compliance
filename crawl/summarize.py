@@ -3,7 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 DISCOVERY = "../data/discovery.jsonl"
-EXTRACT = "../sections.jsonl"
+EXTRACT = "../data/sections.jsonl"
 CHUNKS = "../data/chunks.jsonl"
 OUTPUT = "../data/coverage.jsonl"
 
@@ -58,12 +58,12 @@ for row in load_jsonl(EXTRACT):
 for _ in load_jsonl(CHUNKS):
     chunk_count += 1
 
-failed_urls = sorted(discovered_urls - extracted_urls)
+# failed_urls = sorted(discovered_urls - extracted_urls)
 
 coverage = {
     "discovered_urls": len(discovered_urls),
     "extracted_urls": len(extracted_urls),
-    "failed_urls": len(failed_urls),
+    # "failed_urls": len(failed_urls),
     "coverage_percent": round(
         len(extracted_urls) / max(len(discovered_urls), 1) * 100,
         2,
@@ -74,7 +74,7 @@ coverage = {
     "unique_articles": len(articles),
     "unique_sections": len(citations),
     "total_chunks": chunk_count,
-    "missing_urls": failed_urls,
+    # "missing_urls": failed_urls,
 }
 
 with open(OUTPUT, "w", encoding="utf-8") as f:
